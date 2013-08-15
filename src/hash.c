@@ -20,7 +20,7 @@ struct hash *hash_init()
 	h->table_size = HASH_TABLE_SIZE;
 	h->table = calloc(h->table_size, sizeof(struct hash_entry *));
 	assert(h->table != NULL);
-    return h;
+	return h;
 }
 
 void hash_free(struct hash *h)

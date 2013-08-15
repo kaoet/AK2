@@ -1,0 +1,3 @@
+root=/var/chroot
+cwd=/
+command=/bin/busybox ls /

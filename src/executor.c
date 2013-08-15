@@ -25,15 +25,15 @@
 
 #define UPDATE_IF_GREATER(a,b) a=(a)>(b)?(a):(b)
 
-static const double REALTIME_RATE = 1;
-static const int REALTIME_OFFSET = 1000;
-static const double MEMORY_LIMIT_RATE = 1.5;
-static const long STACK_LIMIT = 256 * 1024 * 1024;
+static double REALTIME_RATE = 1;
+static int REALTIME_OFFSET = 1000;
+static double MEMORY_LIMIT_RATE = 1.5;
+static long STACK_LIMIT = 256 * 1024 * 1024;
 
-struct process_info{
-    long memory_usage;
-    long fake_return_value;
-    bool in_syscall, fake_return;
+struct process_info {
+	long memory_usage;
+	long fake_return_value;
+	bool in_syscall, fake_return;
 };
 
 struct context {
@@ -43,7 +43,7 @@ struct context {
 	uid_t child_uid;
 	gid_t child_gid;
 	long start_time;
-    struct hash *procs;
+	struct hash *procs;
 };
 
 static void set_iptables(struct context *context)
@@ -248,45 +248,50 @@ static enum exec_result_type check_syscall(struct context *context, pid_t pid)
 	long syscall =
 	    ptrace(PTRACE_PEEKUSER, pid, sizeof(long) * ORIG_RAX, NULL);
 	long mem_usage;
-    struct process_info* pinfo;
+	struct process_info *pinfo;
 
-    pinfo=(struct process_info *)hash_find(context->procs,pid);
+	pinfo = (struct process_info *)hash_find(context->procs, pid);
 
-    if(!pinfo->in_syscall){
-        pinfo->in_syscall=true;
-	    DBG("syscall = %ld", syscall);
+	if (!pinfo->in_syscall) {
+		pinfo->in_syscall = true;
+		DBG("syscall = %ld", syscall);
 
-        switch (syscall) {
-        case SYS_brk:
-        case SYS_mmap:
-        case SYS_munmap:
-        case SYS_mremap:
-            //TODO SYS_shmXXX?
-            mem_usage = get_memory_usage(pid);
-            if(pinfo->memory_usage < mem_usage)
-            {
-                DBG("pid=%d oldmem=%ld newmem=%ld",pid,pinfo->memory_usage, mem_usage);
-                context->result->memory -= pinfo->memory_usage;
-                pinfo->memory_usage = mem_usage;
-                context->result->memory += pinfo->memory_usage;
-                if(context->result->memory > context->arg->limit.memory_limit)
-                    return EXEC_MLE;
-            }
-            break;
-        case SYS_setpgid:
-            DBG("Caught setpgid");
-            assert(ptrace(PTRACE_POKEUSER, pid, sizeof(long) * ORIG_RAX, (void *) SYS_getpid)!=-1);
-            pinfo->fake_return=true;
-            pinfo->fake_return_value=0;
-            break;
-        }
-    }else{
-        pinfo->in_syscall=false;
-        if(pinfo->fake_return) {
-            assert(ptrace(PTRACE_POKEUSER, pid, sizeof(long) * RAX, (void *) pinfo->fake_return_value)!=-1);
-            pinfo->fake_return=false;
-        }
-    }
+		switch (syscall) {
+		case SYS_brk:
+		case SYS_mmap:
+		case SYS_munmap:
+		case SYS_mremap:
+			//TODO SYS_shmXXX?
+			mem_usage = get_memory_usage(pid);
+			if (pinfo->memory_usage < mem_usage) {
+				DBG("pid=%d oldmem=%ld newmem=%ld", pid,
+				    pinfo->memory_usage, mem_usage);
+				context->result->memory -= pinfo->memory_usage;
+				pinfo->memory_usage = mem_usage;
+				context->result->memory += pinfo->memory_usage;
+				if (context->arg->limit.memory_limit >=0 && context->result->memory >
+				    context->arg->limit.memory_limit)
+					return EXEC_MLE;
+			}
+			break;
+		case SYS_setpgid:
+			DBG("Caught setpgid");
+			assert(ptrace
+			       (PTRACE_POKEUSER, pid, sizeof(long) * ORIG_RAX,
+				(void *)SYS_getpid) != -1);
+			pinfo->fake_return = true;
+			pinfo->fake_return_value = 0;
+			break;
+		}
+	} else {
+		pinfo->in_syscall = false;
+		if (pinfo->fake_return) {
+			assert(ptrace
+			       (PTRACE_POKEUSER, pid, sizeof(long) * RAX,
+				(void *)pinfo->fake_return_value) != -1);
+			pinfo->fake_return = false;
+		}
+	}
 
 	return EXEC_UNKNOWN;
 }
@@ -367,23 +372,24 @@ static enum exec_result_type loop_body(struct context *context)
 		}
 
 		// first or new process to init
-		if (hash_find(context->procs, pid)==NULL){
-                /*signo == SIGSTOP
-		    || status >> 8 == (SIGTRAP | (PTRACE_EVENT_FORK << 8))
-		    || status >> 8 == (SIGTRAP | (PTRACE_EVENT_VFORK << 8))
-		    || status >> 8 == (SIGTRAP | (PTRACE_EVENT_CLONE << 8))) {*/
+		if (hash_find(context->procs, pid) == NULL) {
+			/*signo == SIGSTOP
+			   || status >> 8 == (SIGTRAP | (PTRACE_EVENT_FORK << 8))
+			   || status >> 8 == (SIGTRAP | (PTRACE_EVENT_VFORK << 8))
+			   || status >> 8 == (SIGTRAP | (PTRACE_EVENT_CLONE << 8))) { */
 			long options =
 			    PTRACE_O_TRACECLONE | PTRACE_O_TRACEVFORK |
 			    PTRACE_O_TRACEFORK | PTRACE_O_TRACESYSGOOD;
 			DBG("options=%ld", options);
 			ptrace(PTRACE_SETOPTIONS, pid, 0, (void *)options);
 
-            struct process_info *info=malloc(sizeof(struct process_info));
-            assert(info!=NULL);
-            info->memory_usage=0;
-            info->fake_return=false;
-            info->in_syscall=false;
-            hash_insert(context->procs,pid,info);
+			struct process_info *info =
+			    malloc(sizeof(struct process_info));
+			assert(info != NULL);
+			info->memory_usage = 0;
+			info->fake_return = false;
+			info->in_syscall = false;
+			hash_insert(context->procs, pid, info);
 		}
 	} else {
 		ERR("Not exit/signaled/stopped");
@@ -439,7 +445,7 @@ void exec_execute(const struct exec_arg *_arg, struct exec_result *_result)
 	struct context *context = malloc(sizeof(struct context));
 
 	assert(context != NULL);
-    context->procs=hash_init();
+	context->procs = hash_init();
 	context->arg = _arg;
 	context->result = _result;
 	context->child_uid = 10000 + rand() % 10000;
@@ -454,22 +460,40 @@ void exec_execute(const struct exec_arg *_arg, struct exec_result *_result)
 	assert(context->child_pid != -1);
 	if (context->child_pid == 0) {
 		do_child(context);
-	}else{
-        do_parent(context);
-    }
+	} else {
+		do_parent(context);
+	}
 
 	unset_iptables(context);
-    hash_free(context->procs);
+	hash_free(context->procs);
 	free(context);
 }
 
 void exec_init()
 {
 	struct sigaction act;
+
+	if (geteuid() != 0) {
+		ERR("Please sudo me");
+		exit(1);
+	}
+
 	sigemptyset(&act.sa_mask);
 	act.sa_sigaction = realtime_alarm_handler;
 	act.sa_flags = SA_SIGINFO;
 	assert(sigaction(SIGRTMIN, &act, NULL) != -1);
 
 	srand(time(NULL));
+}
+
+void exec_init_param(const char *key, const char *value)
+{
+	if (!strcmp(key, "exec.realtime_rate"))
+		REALTIME_RATE = atof(value);
+	else if (!strcmp(key, "exec.realtime_offset"))
+		REALTIME_OFFSET = atoi(value);
+	else if (!strcmp(key, "exec.memory_limit_rate"))
+		MEMORY_LIMIT_RATE = atof(value);
+	else if (!strcmp(key, "exec.stack_limit"))
+		STACK_LIMIT = atol(value);
 }

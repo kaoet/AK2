@@ -5,10 +5,10 @@
 
 struct exec_limit{
 	//In bytes
-	long long memory_limit;
+	long memory_limit;
 
 	//In bytes
-	long long output_limit;
+	long output_limit;
 
 	//In ms
 	int time_limit;
@@ -42,8 +42,9 @@ struct exec_result{
 	enum exec_result_type type;
 	int exit_status;
 	int user_time,real_time;
-	long long memory;
+	long memory;
 };
 
 extern void exec_execute(const struct exec_arg *arg,struct exec_result *result);
 extern void exec_init();
+extern void exec_init_param(const char *key, const char *value);

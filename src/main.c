@@ -58,8 +58,10 @@ int main(int argc, char *argv[])
 		if (line_len == -1)
 			break;
 
-		line_len--;	// Ignore \n
-		line[line_len] = 0;
+		if (line[line_len - 1] == '\n') {
+			line_len--;	// Ignore \n
+			line[line_len] = 0;
+		}
 
 		eq_pos = strchr(line, '=');
 		if (eq_pos == NULL) {

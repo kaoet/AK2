@@ -51,25 +51,25 @@ struct context {
 static void set_iptables(struct context *context)
 {
 	char *cmd_check, *cmd_add;
-    sem_t *mutex;
+	sem_t *mutex;
 
 	assert(asprintf(&cmd_check,
-			"iptables -C OUTPUT -m owner --uid-owner %d -j DROP",
+			"iptables -C OUTPUT -m owner --uid-owner %d -j DROP 2> /dev/null",
 			context->child_uid) != -1);
 	assert(asprintf(&cmd_add,
-			"iptables -A OUTPUT -m owner --uid-owner %d -j DROP",
+			"iptables -A OUTPUT -m owner --uid-owner %d -j DROP 2> /dev/null",
 			context->child_uid) != -1);
 
-    mutex=sem_open("ak2.iptables.lock",O_CREAT,0644,1);
-    assert(mutex!=SEM_FAILED);
-    sem_wait(mutex);
+	mutex = sem_open("ak2.iptables.lock", O_CREAT, 0644, 1);
+	assert(mutex != SEM_FAILED);
+	sem_wait(mutex);
 
 	//Set iptables
 	if (system(cmd_check) != 0)
 		assert(system(cmd_add) == 0);
 
-    sem_post(mutex);
-    sem_close(mutex);
+	sem_post(mutex);
+	sem_close(mutex);
 
 	free(cmd_check);
 	free(cmd_add);
@@ -78,25 +78,25 @@ static void set_iptables(struct context *context)
 static void unset_iptables(struct context *context)
 {
 	char *cmd_check, *cmd_del;
-    sem_t *mutex;
+	sem_t *mutex;
 
 	assert(asprintf(&cmd_check,
-			"iptables -C OUTPUT -m owner --uid-owner %d -j DROP",
+			"iptables -C OUTPUT -m owner --uid-owner %d -j DROP 2> /dev/null",
 			context->child_uid) != -1);
 	assert(asprintf(&cmd_del,
-			"iptables -D OUTPUT -m owner --uid-owner %d -j DROP",
+			"iptables -D OUTPUT -m owner --uid-owner %d -j DROP 2> /dev/null",
 			context->child_uid) != -1);
-    
-    mutex=sem_open("ak2.iptables.lock",O_CREAT,0644,1);
-    assert(mutex!=SEM_FAILED);
-    sem_wait(mutex);
+
+	mutex = sem_open("ak2.iptables.lock", O_CREAT, 0644, 1);
+	assert(mutex != SEM_FAILED);
+	sem_wait(mutex);
 
 	//Set iptables
 	if (system(cmd_check) == 0)
 		assert(system(cmd_del) == 0);
 
-    sem_post(mutex);
-    sem_close(mutex);
+	sem_post(mutex);
+	sem_close(mutex);
 
 	free(cmd_check);
 	free(cmd_del);
@@ -289,7 +289,8 @@ static enum exec_result_type check_syscall(struct context *context, pid_t pid)
 				context->result->memory -= pinfo->memory_usage;
 				pinfo->memory_usage = mem_usage;
 				context->result->memory += pinfo->memory_usage;
-				if (context->arg->limit.memory_limit >=0 && context->result->memory >
+				if (context->arg->limit.memory_limit >= 0
+				    && context->result->memory >
 				    context->arg->limit.memory_limit)
 					return EXEC_MLE;
 			}
@@ -470,7 +471,7 @@ void exec_execute(const struct exec_arg *_arg, struct exec_result *_result)
 	context->result = _result;
 	context->child_uid = 10000 + rand() % 20000;
 	context->child_gid = context->child_uid;
-    LOG("uid=gid=%d\n",context->child_uid);
+	DBG("uid=gid=%d", context->child_uid);
 
 	memset(context->result, 0, sizeof(struct exec_result));
 	context->result->type = EXEC_UNKNOWN;
@@ -493,10 +494,10 @@ void exec_execute(const struct exec_arg *_arg, struct exec_result *_result)
 void exec_init()
 {
 	struct sigaction act;
-    unsigned seed;
-    FILE *urandom;
-    struct timeval tval;
-    int i;
+	unsigned seed;
+	FILE *urandom;
+	struct timeval tval;
+	int i;
 
 	if (geteuid() != 0) {
 		ERR("Please sudo me");
@@ -508,16 +509,16 @@ void exec_init()
 	act.sa_flags = SA_SIGINFO;
 	assert(sigaction(SIGRTMIN, &act, NULL) != -1);
 
-    urandom=fopen("/dev/urandom","r");
-    assert(urandom!=NULL);
-    assert(fread(&seed,sizeof(seed),1,urandom)==1);
-    fclose(urandom);
+	urandom = fopen("/dev/urandom", "r");
+	assert(urandom != NULL);
+	assert(fread(&seed, sizeof(seed), 1, urandom) == 1);
+	fclose(urandom);
 	srand(seed);
-    
-    gettimeofday(&tval,NULL);
-    for(i=0;i<sizeof(struct timeval)/sizeof(int);i++){
-        srand(seed ^ *((int*)&tval+i));
-    }
+
+	gettimeofday(&tval, NULL);
+	for (i = 0; i < sizeof(struct timeval) / sizeof(int); i++) {
+		srand(seed ^ *((int *)&tval + i));
+	}
 }
 
 void exec_init_param(const char *key, const char *value)

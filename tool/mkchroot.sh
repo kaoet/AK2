@@ -14,13 +14,18 @@ copy_directory(){
 }
 copy_file(){
     FILE_LOCATION="$1"
+	if [[ -z "$2" ]]; then
+		DEST_LOCATION="$1"
+	else
+		DEST_LOCATION="$2"
+	fi
     if ! [ -e "$FILE_LOCATION" ]; then
         echo Cannot find $FILE_LOCATION! Ignore.
     fi
     echo Copying $FILE_LOCATION
-    FILE_DIR=`dirname "$FILE_LOCATION"`
-    mkdir -p "$CHROOT/$FILE_DIR"
-    cp "$FILE_LOCATION" "$CHROOT/$FILE_DIR"
+    DEST_DIR=`dirname "$DEST_LOCATION"`
+    mkdir -p "$CHROOT/$DEST_DIR"
+    cp "$FILE_LOCATION" "$CHROOT/$DEST_LOCATION"
 }
 
 copy_lib(){
@@ -69,8 +74,10 @@ copy_lib "libutil.so"
 copy_lib "libcrypto.so"
 copy_lib "libstdc++.so"
 copy_lib "libssl.so"
-copy_lib "libopcodes-2.22-system.so"
-copy_lib "libbfd-2.22-system.so"
+copy_lib "libopcodes-"
+copy_lib "libbfd-"
+copy_lib "libcloog-isl.so"
+copy_lib "libisl.so"
 copy_lib "crt1.o"
 copy_lib "crti.o"
 copy_lib "crtn.o"
@@ -92,10 +99,20 @@ copy_file "/usr/bin/g++"
 copy_directory "/usr/lib/gcc"
 
 # copy python
-copy_file "/usr/bin/python2"
-copy_file "/usr/bin/python3"
-copy_directory "/usr/lib/python2.7"
-copy_directory "/usr/lib/python3.2"
+for PY_VER in 9 8 7 6 5 4 3 2 1; do
+	if [ -e /usr/bin/python2.$PY_VER ]; then
+		copy_file "/usr/bin/python2.$PY_VER" "/usr/bin/python2"
+		copy_directory "/usr/lib/python2.$PY_VER"
+		break
+    fi
+done
+for PY_VER in 9 8 7 6 5 4 3 2 1; do
+	if [ -e /usr/bin/python3.$PY_VER ]; then
+		copy_file "/usr/bin/python3.$PY_VER" "/usr/bin/python3"
+		copy_directory "/usr/lib/python3.$PY_VER"
+		break
+	fi
+done
 
 # copy fpc
 copy_file "/usr/bin/fpc"

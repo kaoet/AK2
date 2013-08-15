@@ -1,5 +1,5 @@
 CFLAGS=-Wall -Werror -std=gnu99
-LIBS=-lm -lrt
+LIBS=-lm -lrt -lpthread
 
 .PHONY: clean indent release debug
 

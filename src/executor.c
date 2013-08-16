@@ -77,12 +77,9 @@ static void set_iptables(struct context *context)
 
 static void unset_iptables(struct context *context)
 {
-	char *cmd_check, *cmd_del;
+	char *cmd_del;
 	sem_t *mutex;
 
-	assert(asprintf(&cmd_check,
-			"iptables -C OUTPUT -m owner --uid-owner %d -j DROP 2> /dev/null",
-			context->child_uid) != -1);
 	assert(asprintf(&cmd_del,
 			"iptables -D OUTPUT -m owner --uid-owner %d -j DROP 2> /dev/null",
 			context->child_uid) != -1);
@@ -92,13 +89,11 @@ static void unset_iptables(struct context *context)
 	sem_wait(mutex);
 
 	//Set iptables
-	if (system(cmd_check) == 0)
-		assert(system(cmd_del) == 0);
+	system(cmd_del);
 
 	sem_post(mutex);
 	sem_close(mutex);
 
-	free(cmd_check);
 	free(cmd_del);
 }
 

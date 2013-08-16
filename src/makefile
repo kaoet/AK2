@@ -1,4 +1,4 @@
-CFLAGS=-Wall -Werror -std=gnu99
+CFLAGS=-Wall -std=gnu99
 LIBS=-lm -lrt -lpthread
 
 .PHONY: clean indent release debug

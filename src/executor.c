@@ -321,14 +321,23 @@ static enum exec_result_type loop_body(struct context *context)
 	int status;
 	pid_t pid;
 
-	//Wait for any process in my child's pgrp
-	pid = wait4(-context->child_pid, &status, 0, &rusage);
+WaitAgain:
+    //Wait for any process in my child's pgrp
+    pid = wait4(-context->child_pid, &status, 0, &rusage);
 
-	//Maybe the process group has not built up?
-	if (pid == -1 && errno == ECHILD) {
-		pid = wait4(context->child_pid, &status, 0, &rusage);
-		assert(pid > 0);
-	}
+    if (pid == -1) {
+        if (errno == ECHILD){
+            //Maybe the process group has not built up?
+            pid = wait4(context->child_pid, &status, 0, &rusage);
+            assert(pid > 0);
+        }else if(errno == EINTR){
+            ERR("wait4 returned EINTR, I've to wait again");
+            goto WaitAgain;
+        }else{
+            ERR("wait4 returned -1 & errno = %d\n",errno);
+            return EXEC_VIOLATION;
+        }
+    }
 
 	DBG("wait4 pid=%d", pid);
 

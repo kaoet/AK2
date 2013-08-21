@@ -127,7 +127,9 @@ static void set_rlimits(const struct exec_limit *limit)
 	//To send SIGXCPU
 	//Sys + User
 	if (limit->time_limit >= 0) {
-		rlimit.rlim_cur = ceil(limit->time_limit / 1000.0);
+		rlimit.rlim_cur =
+		    ceil(limit->time_limit * REALTIME_RATE +
+			 REALTIME_OFFSET / 1000.0);
 		//To SIGKILL the program when he ignored SIGXCPU
 		rlimit.rlim_max = rlimit.rlim_cur + 1;
 		setrlimit(RLIMIT_CPU, &rlimit);
@@ -321,23 +323,23 @@ static enum exec_result_type loop_body(struct context *context)
 	int status;
 	pid_t pid;
 
-WaitAgain:
-    //Wait for any process in my child's pgrp
-    pid = wait4(-context->child_pid, &status, 0, &rusage);
+ WaitAgain:
+	//Wait for any process in my child's pgrp
+	pid = wait4(-context->child_pid, &status, 0, &rusage);
 
-    if (pid == -1) {
-        if (errno == ECHILD){
-            //Maybe the process group has not built up?
-            pid = wait4(context->child_pid, &status, 0, &rusage);
-            assert(pid > 0);
-        }else if(errno == EINTR){
-            ERR("wait4 returned EINTR, I've to wait again");
-            goto WaitAgain;
-        }else{
-            ERR("wait4 returned -1 & errno = %d\n",errno);
-            return EXEC_VIOLATION;
-        }
-    }
+	if (pid == -1) {
+		if (errno == ECHILD) {
+			//Maybe the process group has not built up?
+			pid = wait4(context->child_pid, &status, 0, &rusage);
+			assert(pid > 0);
+		} else if (errno == EINTR) {
+			ERR("wait4 returned EINTR, I've to wait again");
+			goto WaitAgain;
+		} else {
+			ERR("wait4 returned -1 & errno = %d\n", errno);
+			return EXEC_VIOLATION;
+		}
+	}
 
 	DBG("wait4 pid=%d", pid);
 

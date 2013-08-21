@@ -58,6 +58,8 @@ mkdir -p "$CHROOT"
 # make /dev
 mkdir -p "$CHROOT/dev"
 mknod -m 666 "$CHROOT/dev/null" c 1 3
+mknod -m 644 "$CHROOT/dev/random" c 1 8
+mknod -m 644 "$CHROOT/dev/urandom" c 1 9
 
 # required libraries
 copy_lib "libc.so"
@@ -65,6 +67,8 @@ copy_lib "libtinfo.so"
 copy_lib "libz.so"
 copy_lib "libm.so"
 copy_lib "ld-linux-x86-64.so"
+copy_lib "librt.so"
+copy_lib "libexpat.so"
 copy_lib "libdl.so"
 copy_lib "libmpc.so"
 copy_lib "libgmp.so"

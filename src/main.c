@@ -131,7 +131,7 @@ int main(int argc, char *argv[])
 		puts("type=MEM_VIOLATION");
 		break;
 	case EXEC_VIOLATION:
-		puts("tyep=VIOLATION");
+		puts("type=VIOLATION");
 		break;
 	}
 	return 0;

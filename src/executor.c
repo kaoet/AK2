@@ -333,8 +333,9 @@ static enum exec_result_type loop_body(struct context *context)
 			pid = wait4(context->child_pid, &status, 0, &rusage);
 			assert(pid > 0);
 		} else if (errno == EINTR) {
-			ERR("wait4 returned EINTR, I've to wait again");
-			goto WaitAgain;
+			ERR("wait4 returned EINTR.");
+			return EXEC_VIOLATION;
+			//goto WaitAgain;
 		} else {
 			ERR("wait4 returned -1 & errno = %d\n", errno);
 			return EXEC_VIOLATION;

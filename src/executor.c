@@ -326,6 +326,16 @@ static enum exec_result_type loop_body(struct context *context)
  WaitAgain:
 	//Wait for any process in my child's pgrp
 	pid = wait4(-context->child_pid, &status, 0, &rusage);
+	
+	result->real_time = time_of_day() - context->start_time;
+
+	if (limit->time_limit >= 0 && result->type == EXEC_UNKNOWN) {
+		if (result->user_time > limit->time_limit
+		    || result->real_time >
+		    limit->time_limit * REALTIME_RATE + REALTIME_OFFSET) {
+			return EXEC_TLE;
+		}
+	}
 
 	if (pid == -1) {
 		if (errno == ECHILD) {
@@ -333,9 +343,8 @@ static enum exec_result_type loop_body(struct context *context)
 			pid = wait4(context->child_pid, &status, 0, &rusage);
 			assert(pid > 0);
 		} else if (errno == EINTR) {
-			ERR("wait4 returned EINTR.");
-			return EXEC_VIOLATION;
-			//goto WaitAgain;
+			ERR("wait4 returned EINTR. I've to wait again");
+			goto WaitAgain;
 		} else {
 			ERR("wait4 returned -1 & errno = %d\n", errno);
 			return EXEC_VIOLATION;
@@ -347,7 +356,6 @@ static enum exec_result_type loop_body(struct context *context)
 	UPDATE_IF_GREATER(result->user_time,
 			  rusage.ru_utime.tv_sec * 1000 +
 			  rusage.ru_utime.tv_usec / 1000);
-	result->real_time = time_of_day() - context->start_time;
 
 	if (limit->time_limit >= 0 && result->type == EXEC_UNKNOWN) {
 		if (result->user_time > limit->time_limit

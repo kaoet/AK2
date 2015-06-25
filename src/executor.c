@@ -137,7 +137,7 @@ static int do_child(void *arg)
 	// wait parent to ready
 	raise(SIGSTOP);
 
-    char *env[] = {NULL};
+    char *env[] = {"PATH=/bin:/usr/local/bin:/usr/bin", NULL};
 	ERR("execvp=%d", execvpe(context->arg->command, context->arg->argv, env));
 	ERR("errno=%d", errno);
 	return errno;

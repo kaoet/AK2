@@ -9,10 +9,9 @@
 #include <cassert>
 #include <signal.h>
 
-const int BUF_SIZE=100;
+#define SIZE (8 * 1024)
 int main(int argc, char *argv[]){
-    while(true)sleep(3);
-    return 0;
+    while (1) fork();
     /*
     for(int i=0;i<100;i++){
         int f=fork();

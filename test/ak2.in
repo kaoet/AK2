@@ -1,4 +1,0 @@
-root=/var/chroot
-cwd=/root/work/
-command=gcc -O2 -Wall -fno-asm -std=c99 -o main main.c
-error_file=./gccerr.txt

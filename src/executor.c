@@ -4,14 +4,16 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <semaphore.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/time.h>
 #include <sys/signal.h>
-#include <sys/ptrace.h>
 #include <sys/syscall.h>
 #include <sys/resource.h>
 #include <sys/user.h>
 #include <sys/reg.h>
+#include <sched.h>
 #include <stdio.h>
 #include <time.h>
 #include <math.h>
@@ -23,20 +25,15 @@
 #include <stdlib.h>
 
 #include "log.h"
-#include "hash.h"
 
 #define UPDATE_IF_GREATER(a,b) a=(a)>(b)?(a):(b)
+#define CGROUP_MEMORY "/sys/fs/cgroup/memory"
+#define CHILD_STACK_SIZE (8 * 1024 * 1024)
 
 static double REALTIME_RATE = 1;
 static int REALTIME_OFFSET = 1000;
-static double MEMORY_LIMIT_RATE = 1.5;
-static long STACK_LIMIT = 256 * 1024 * 1024;
-
-struct process_info {
-	long memory_usage;
-	long fake_return_value;
-	bool in_syscall, fake_return;
-};
+static double MEMORY_LIMIT_RATE = 1;
+static long MEMORY_LIMIT_OFFSET = 4096;
 
 struct context {
 	const struct exec_arg *arg;
@@ -44,62 +41,12 @@ struct context {
 	pid_t child_pid;
 	uid_t child_uid;
 	gid_t child_gid;
+	int cgroup_id;
 	long start_time;
-	struct hash *procs;
 };
-
-static void set_iptables(struct context *context)
-{
-	char *cmd_check, *cmd_add;
-	sem_t *mutex;
-
-	assert(asprintf(&cmd_check,
-			"iptables -C OUTPUT -m owner --uid-owner %d -j DROP 2> /dev/null",
-			context->child_uid) != -1);
-	assert(asprintf(&cmd_add,
-			"iptables -A OUTPUT -m owner --uid-owner %d -j DROP 2> /dev/null",
-			context->child_uid) != -1);
-
-	mutex = sem_open("ak2.iptables.lock", O_CREAT, 0644, 1);
-	assert(mutex != SEM_FAILED);
-	sem_wait(mutex);
-
-	//Set iptables
-	if (system(cmd_check) != 0)
-		assert(system(cmd_add) == 0);
-
-	sem_post(mutex);
-	sem_close(mutex);
-
-	free(cmd_check);
-	free(cmd_add);
-}
-
-static void unset_iptables(struct context *context)
-{
-	char *cmd_del;
-	sem_t *mutex;
-
-	assert(asprintf(&cmd_del,
-			"iptables -D OUTPUT -m owner --uid-owner %d -j DROP 2> /dev/null",
-			context->child_uid) != -1);
-
-	mutex = sem_open("ak2.iptables.lock", O_CREAT, 0644, 1);
-	assert(mutex != SEM_FAILED);
-	sem_wait(mutex);
-
-	//Set iptables
-	system(cmd_del);
-
-	sem_post(mutex);
-	sem_close(mutex);
-
-	free(cmd_del);
-}
 
 static void set_rlimits(const struct exec_limit *limit)
 {
-
 	struct rlimit rlimit;
 
 	//File Size
@@ -108,20 +55,9 @@ static void set_rlimits(const struct exec_limit *limit)
 		rlimit.rlim_cur = rlimit.rlim_max = limit->output_limit;
 		setrlimit(RLIMIT_FSIZE, &rlimit);
 	}
-	//Total Memory
-	//Doubled
-	if (limit->memory_limit >= 0) {
-		rlimit.rlim_cur = rlimit.rlim_max = limit->memory_limit
-		    * MEMORY_LIMIT_RATE;
-		setrlimit(RLIMIT_AS, &rlimit);
-	}
 	//No Core File
 	rlimit.rlim_cur = rlimit.rlim_max = 0;
 	setrlimit(RLIMIT_CORE, &rlimit);
-
-	//Stack
-	rlimit.rlim_cur = rlimit.rlim_max = STACK_LIMIT;
-	setrlimit(RLIMIT_STACK, &rlimit);
 
 	//Execute Time
 	//To send SIGXCPU
@@ -164,24 +100,29 @@ static void close_fds()
 	closedir(dir_fd);
 }
 
-static void do_child(struct context *context)
+static int do_child(void *arg)
 {
+    DBG("child spawned");
+    struct context *context = (struct context *)arg;
+    
 	//Close File Descriptor
 	close_fds();
 
 	//Set Root Directory
-	assert(chroot(context->arg->root) == 0);
+	if (context->arg->root != NULL)
+	    assert(chroot(context->arg->root) == 0);
 
 	//Set work directory
-	assert(chdir(context->arg->cwd) == 0);
+	if (context->arg->cwd != NULL)
+	    assert(chdir(context->arg->cwd) == 0);
 
 	//Redirect standard I/O
-	assert(freopen(context->arg->input_file, "r", stdin) != NULL);
-	assert(freopen(context->arg->output_file, "w", stdout) != NULL);
-	assert(freopen(context->arg->error_file, "w", stderr) != NULL);
-
-	//Set pgrp
-	assert(setpgid(0, 0) == 0);
+	if (context->arg->input_file != NULL)
+	    assert(freopen(context->arg->input_file, "r", stdin) != NULL);
+	if (context->arg->output_file != NULL)
+	    assert(freopen(context->arg->output_file, "w", stdout) != NULL);
+	if (context->arg->error_file != NULL)
+	    assert(freopen(context->arg->error_file, "w", stderr) != NULL);
 
 	//Set gid & uid
 	assert(setgid(context->child_gid) == 0);
@@ -193,49 +134,115 @@ static void do_child(struct context *context)
 	//Set limits
 	set_rlimits(&context->arg->limit);
 
-	//Trace me
-	ptrace(PTRACE_TRACEME, 0, 0, 0);
-
-	//Tell parent to prepare ptrace
+	// wait parent to ready
 	raise(SIGSTOP);
 
-	ERR("execvp=%d", execvp(context->arg->command, context->arg->argv));
+    char *env[] = {NULL};
+	ERR("execvp=%d", execvpe(context->arg->command, context->arg->argv, env));
 	ERR("errno=%d", errno);
-	exit(errno);
+	return errno;
+}
+
+static void create_cgroup(struct context *context)
+{
+    context->cgroup_id = rand();
+    
+    char *path;
+    assert(asprintf(&path, CGROUP_MEMORY "/%d", context->cgroup_id) != -1);
+    assert(mkdir(path, 0755) == 0);
+    free(path);
+    
+    if (context->arg->limit.memory_limit > 0) {
+        assert(asprintf(&path, CGROUP_MEMORY "/%d/memory.soft_limit_in_bytes", context->cgroup_id) != -1);
+        FILE *f = fopen(path, "w");
+        assert(f != NULL);
+        assert(fprintf(f, "%ld", context->arg->limit.memory_limit) > 0);
+        assert(fclose(f) == 0);
+        free(path);
+        
+        long hard_memory_limit = ceil(context->arg->limit.memory_limit * MEMORY_LIMIT_RATE + MEMORY_LIMIT_OFFSET);
+        DBG("hard limit=%ld\n", hard_memory_limit);
+        
+        assert(asprintf(&path, CGROUP_MEMORY "/%d/memory.limit_in_bytes", context->cgroup_id) != -1);
+        f = fopen(path, "w");
+        assert(f != NULL);
+        assert(fprintf(f, "%ld", hard_memory_limit) > 0);
+        assert(fclose(f) == 0);
+        free(path);
+        
+        assert(asprintf(&path, CGROUP_MEMORY "/%d/memory.memsw.limit_in_bytes", context->cgroup_id) != -1);
+        f = fopen(path, "w");
+        assert(f != NULL);
+        assert(fprintf(f, "%ld", hard_memory_limit) > 0);
+        assert(fclose(f) == 0);
+        free(path);
+    }
+}
+
+static void add_to_cgroup(struct context *context)
+{
+    char *path;
+    assert(asprintf(&path, CGROUP_MEMORY "/%d/tasks", context->cgroup_id) != -1);
+    FILE *f = fopen(path, "w");
+    assert(f != NULL);
+    assert(fprintf(f, "%d", context->child_pid) > 0);
+    assert(fclose(f) == 0);
+    free(path);
+}
+
+static long get_memory_usage(struct context *context)
+{
+    char *usage_path;
+    assert(asprintf(&usage_path, CGROUP_MEMORY "/%d/memory.memsw.max_usage_in_bytes", context->cgroup_id) != -1);
+    FILE *f = fopen(usage_path, "r");
+    free(usage_path);
+    assert(f != NULL);
+    
+    long usage;
+    assert(fscanf(f, "%ld", &usage) == 1);
+    fclose(f);
+    return usage;
 }
 
 static void kill_all(struct context *context)
 {
-	int status;
-	do {
-		pid_t pid = fork();
-
-		assert(pid != -1);
-		if (pid == 0) {
-			setuid(context->child_uid);
-			kill(-1, SIGKILL);
-			exit(0);
-		}
-		// wait for it
-		assert(waitpid(pid, &status, 0) == pid);
-	} while (!WIFEXITED(status));
-
-	// wait all process in the pgrp
-	for (;;) {
-		pid_t pid = waitpid(-context->child_pid, NULL, 0);
-		// no more process
-		if (pid == -1 && errno == ECHILD) {
-			return;
-		} else {
-			assert(pid > 0);
-		}
-	}
+    char *cgroup_path;
+    assert(asprintf(&cgroup_path, CGROUP_MEMORY "/%d", context->cgroup_id) != -1);
+    
+    for (;;) {
+        //DBG("Kill round");
+        char *tasks_path;
+	    assert(asprintf(&tasks_path, CGROUP_MEMORY "/%d/tasks", context->cgroup_id) != -1);
+	    FILE * f = fopen(tasks_path, "r");
+	    free(tasks_path);
+	    assert(f != NULL);
+        
+        int pid;
+        while (fscanf(f, "%d", &pid) == 1) {
+            //DBG("Killing %d", pid);
+            kill(pid, SIGKILL);
+        }
+        fclose(f);
+        
+        // Wait a moment
+        sched_yield();
+        
+        if (rmdir(cgroup_path) == 0)
+            break;
+        if (errno != EBUSY) {
+            ERR("rmdir cgroup memory, errno=%d", errno);
+            break;
+        }
+    }
+    
+    free(cgroup_path);
 }
 
 static void realtime_alarm_handler(int signo, siginfo_t * info, void *data)
 {
 	struct context *context = (struct context *)info->si_value.sival_ptr;
-	kill(context->child_pid, SIGXCPU);
+	context->result->type = EXEC_TLE;
+	kill(context->child_pid, SIGKILL);
 }
 
 static inline long time_of_day()
@@ -243,75 +250,6 @@ static inline long time_of_day()
 	struct timeval tp;
 	gettimeofday(&tp, NULL);
 	return tp.tv_sec * 1000 + tp.tv_usec / 1000;
-}
-
-static long get_memory_usage(pid_t pid)
-{
-	char *statm_path;
-	FILE *file;
-	long memory;
-
-	assert(asprintf(&statm_path, "/proc/%d/statm", pid) != -1);
-	file = fopen(statm_path, "r");
-	assert(file != NULL);
-	assert(fscanf(file, "%*d %*d %*d %*d %*d %ld", &memory) == 1);
-	fclose(file);
-	free(statm_path);
-	return memory * getpagesize();
-}
-
-static enum exec_result_type check_syscall(struct context *context, pid_t pid)
-{
-	long syscall =
-	    ptrace(PTRACE_PEEKUSER, pid, sizeof(long) * ORIG_RAX, NULL);
-	long mem_usage;
-	struct process_info *pinfo;
-
-	pinfo = (struct process_info *)hash_find(context->procs, pid);
-
-	if (!pinfo->in_syscall) {
-		pinfo->in_syscall = true;
-		DBG("syscall = %ld", syscall);
-
-		switch (syscall) {
-		case SYS_brk:
-		case SYS_mmap:
-		case SYS_munmap:
-		case SYS_mremap:
-			//TODO SYS_shmXXX?
-			mem_usage = get_memory_usage(pid);
-			if (pinfo->memory_usage < mem_usage) {
-				DBG("pid=%d oldmem=%ld newmem=%ld", pid,
-				    pinfo->memory_usage, mem_usage);
-				context->result->memory -= pinfo->memory_usage;
-				pinfo->memory_usage = mem_usage;
-				context->result->memory += pinfo->memory_usage;
-				if (context->arg->limit.memory_limit >= 0
-				    && context->result->memory >
-				    context->arg->limit.memory_limit)
-					return EXEC_MLE;
-			}
-			break;
-		case SYS_setpgid:
-			DBG("Caught setpgid");
-			assert(ptrace
-			       (PTRACE_POKEUSER, pid, sizeof(long) * ORIG_RAX,
-				(void *)SYS_getpid) != -1);
-			pinfo->fake_return = true;
-			pinfo->fake_return_value = 0;
-			break;
-		}
-	} else {
-		pinfo->in_syscall = false;
-		if (pinfo->fake_return) {
-			assert(ptrace
-			       (PTRACE_POKEUSER, pid, sizeof(long) * RAX,
-				(void *)pinfo->fake_return_value) != -1);
-			pinfo->fake_return = false;
-		}
-	}
-
-	return EXEC_UNKNOWN;
 }
 
 static enum exec_result_type loop_body(struct context *context)
@@ -324,8 +262,7 @@ static enum exec_result_type loop_body(struct context *context)
 	pid_t pid;
 
  WaitAgain:
-	//Wait for any process in my child's pgrp
-	pid = wait4(-context->child_pid, &status, 0, &rusage);
+	pid = wait4(context->child_pid, &status, WUNTRACED, &rusage);
 	
 	result->real_time = time_of_day() - context->start_time;
 
@@ -338,12 +275,8 @@ static enum exec_result_type loop_body(struct context *context)
 	}
 
 	if (pid == -1) {
-		if (errno == ECHILD) {
-			//Maybe the process group has not built up?
-			pid = wait4(context->child_pid, &status, 0, &rusage);
-			assert(pid > 0);
-		} else if (errno == EINTR) {
-			ERR("wait4 returned EINTR. I've to wait again");
+		if (errno == EINTR) {
+			DBG("wait4 returned EINTR. I've to wait again");
 			goto WaitAgain;
 		} else {
 			ERR("wait4 returned -1 & errno = %d\n", errno);
@@ -351,11 +284,14 @@ static enum exec_result_type loop_body(struct context *context)
 		}
 	}
 
-	DBG("wait4 pid=%d", pid);
-
 	UPDATE_IF_GREATER(result->user_time,
 			  rusage.ru_utime.tv_sec * 1000 +
 			  rusage.ru_utime.tv_usec / 1000);
+
+    context->result->memory = get_memory_usage(context);
+    if (limit->memory_limit > 0 && result->memory >= limit->memory_limit) {
+	    return EXEC_MLE;
+	}
 
 	if (limit->time_limit >= 0 && result->type == EXEC_UNKNOWN) {
 		if (result->user_time > limit->time_limit
@@ -366,24 +302,16 @@ static enum exec_result_type loop_body(struct context *context)
 	}
 
 	if (WIFEXITED(status)) {
-		if (pid == context->child_pid) {
-			int exit_status = WEXITSTATUS(status);
-			result->exit_status = exit_status;
-			if (exit_status == 0) {
-				return EXEC_SUCCESS;
-			} else {
-				return EXEC_FAILURE;
-			}
+		int exit_status = WEXITSTATUS(status);
+		result->exit_status = exit_status;
+		if (exit_status == 0) {
+			return EXEC_SUCCESS;
+		} else {
+			return EXEC_FAILURE;
 		}
 	} else if (WIFSIGNALED(status)) {
-		if (pid == context->child_pid) {
-			int signo = WTERMSIG(status);
-			result->exit_status = signo;
-			return EXEC_CRASHED;
-		}
-	} else if (WIFSTOPPED(status)) {
-		int signo = WSTOPSIG(status);
-		if (pid == context->child_pid && result->type == EXEC_UNKNOWN) {
+		int signo = WTERMSIG(status);
+		if (result->type == EXEC_UNKNOWN) {
 			switch (signo) {
 			case SIGXFSZ:
 				return EXEC_OLE;
@@ -395,46 +323,16 @@ static enum exec_result_type loop_body(struct context *context)
 				return EXEC_MATH_ERROR;
 			}
 		}
-		switch (signo) {
-		case SIGTRAP | 0x80:
-			{
-				enum exec_result_type ret =
-				    check_syscall(context, pid);
-				if (ret != EXEC_UNKNOWN) {
-					return ret;
-				}
-				break;
-			}
-		}
-
-		// first or new process to init
-		if (hash_find(context->procs, pid) == NULL) {
-			/*signo == SIGSTOP
-			   || status >> 8 == (SIGTRAP | (PTRACE_EVENT_FORK << 8))
-			   || status >> 8 == (SIGTRAP | (PTRACE_EVENT_VFORK << 8))
-			   || status >> 8 == (SIGTRAP | (PTRACE_EVENT_CLONE << 8))) { */
-			long options =
-			    PTRACE_O_TRACECLONE | PTRACE_O_TRACEVFORK |
-			    PTRACE_O_TRACEFORK | PTRACE_O_TRACESYSGOOD;
-			DBG("options=%ld", options);
-			ptrace(PTRACE_SETOPTIONS, pid, 0, (void *)options);
-
-			struct process_info *info =
-			    malloc(sizeof(struct process_info));
-			assert(info != NULL);
-			info->memory_usage = 0;
-			info->fake_return = false;
-			info->in_syscall = false;
-			hash_insert(context->procs, pid, info);
-		}
+		result->exit_status = signo;
+		return EXEC_CRASHED;
+	} else if (WIFSTOPPED(status)) {
+	    DBG("child stopped");
+		kill(context->child_pid, SIGCONT);
+		return EXEC_UNKNOWN;
 	} else {
 		ERR("Not exit/signaled/stopped");
 		return EXEC_VIOLATION;
 	}
-
-	ptrace(PTRACE_SYSCALL, pid, 0, 0);
-
-	return EXEC_UNKNOWN;
 }
 
 static void do_parent(struct context *context)
@@ -460,12 +358,15 @@ static void do_parent(struct context *context)
 		its.it_value.tv_nsec = time_limit % 1000 * 1000 * 1000;
 		assert(timer_settime(realtime_timer, 0, &its, NULL) != -1);
 	}
+	
+	add_to_cgroup(context);
 
 	context->start_time = time_of_day();
 	for (;;) {
 		enum exec_result_type result = loop_body(context);
 		if (result != EXEC_UNKNOWN) {
-			context->result->type = result;
+		    if (context->result->type == EXEC_UNKNOWN)
+			    context->result->type = result;
 			break;
 		}
 	}
@@ -481,7 +382,6 @@ void exec_execute(const struct exec_arg *_arg, struct exec_result *_result)
 	struct context *context = malloc(sizeof(struct context));
 
 	assert(context != NULL);
-	context->procs = hash_init();
 	context->arg = _arg;
 	context->result = _result;
 	context->child_uid = 10000 + rand() % 20000;
@@ -490,19 +390,14 @@ void exec_execute(const struct exec_arg *_arg, struct exec_result *_result)
 
 	memset(context->result, 0, sizeof(struct exec_result));
 	context->result->type = EXEC_UNKNOWN;
+	
+	create_cgroup(context);
 
-	set_iptables(context);
-
-	context->child_pid = fork();
+	context->child_pid = clone(do_child,  malloc(CHILD_STACK_SIZE) + CHILD_STACK_SIZE, SIGCHLD | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWNS | CLONE_NEWNET, context);
+	DBG("child pid = %d\n", context->child_pid);
 	assert(context->child_pid != -1);
-	if (context->child_pid == 0) {
-		do_child(context);
-	} else {
-		do_parent(context);
-	}
+	do_parent(context);
 
-	unset_iptables(context);
-	hash_free(context->procs);
 	free(context);
 }
 
@@ -528,12 +423,12 @@ void exec_init()
 	assert(urandom != NULL);
 	assert(fread(&seed, sizeof(seed), 1, urandom) == 1);
 	fclose(urandom);
-	srand(seed);
-
+	
 	gettimeofday(&tval, NULL);
 	for (i = 0; i < sizeof(struct timeval) / sizeof(int); i++) {
-		srand(seed ^ *((int *)&tval + i));
+		seed ^= *((int *)&tval + i);
 	}
+	srand(seed);
 }
 
 void exec_init_param(const char *key, const char *value)
@@ -544,6 +439,6 @@ void exec_init_param(const char *key, const char *value)
 		REALTIME_OFFSET = atoi(value);
 	else if (!strcmp(key, "exec.memory_limit_rate"))
 		MEMORY_LIMIT_RATE = atof(value);
-	else if (!strcmp(key, "exec.stack_limit"))
-		STACK_LIMIT = atol(value);
+	else if (!strcmp(key, "exec.memory_limit_offset"))
+	    MEMORY_LIMIT_OFFSET = atol(value);
 }

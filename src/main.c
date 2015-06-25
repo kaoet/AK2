@@ -11,9 +11,9 @@ static long memory_limit = -1;
 static long output_limit = -1;
 static int process_limit = -1;
 static char *command;
-static const char *input_file = "/dev/null";
-static const char *output_file = "/dev/null";
-static const char *error_file = "/dev/null";
+static const char *input_file;
+static const char *output_file;
+static const char *error_file;
 static const char *root;
 static const char *cwd;
 
@@ -76,6 +76,11 @@ int main(int argc, char *argv[])
 		}
 
 		free(line);
+	}
+	
+	if (command == NULL) {
+	    ERR("no command specified");
+	    return 1;
 	}
 
 	arg.limit.memory_limit = memory_limit;

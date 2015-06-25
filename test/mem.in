@@ -1,0 +1,2 @@
+memory_limit=100000
+command=../test/mem

@@ -1,0 +1,2 @@
+time_limit=3000
+command=../test/sleep
